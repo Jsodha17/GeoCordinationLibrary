@@ -5,7 +5,7 @@ import com.example.routegen.RouteService;
 public class QuickTest {
     public static void main(String[] args) throws Exception {
         // 1) prefer env var
-        String apiKey = "AIzaSyCO4yYwqBOJsuDoD6zheIr5GeUcNOZVJzE";
+        String apiKey = "";
 
         RouteService.RouteComparisonResult comp = RouteService.getAllRouteMetrics(
                 23.038765, 72.610756, 23.070000, 72.620000, apiKey
