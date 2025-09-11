@@ -33,7 +33,7 @@ import java.util.*;
  */
 public class GoogleRouteGenerator {
     // Optional fallback key (leave blank if you prefer not to hardcode)
-    private static final String GOOGLE_API_KEY = "AIzaSyCO4yYwqBOJsuDoD6zheIr5GeUcNOZVJzE";
+    private static final String GOOGLE_API_KEY = "YOUR API KEY";
 
     private static final OkHttpClient client = new OkHttpClient();
     private static final Gson gson = new GsonBuilder().setPrettyPrinting().create();
