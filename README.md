@@ -1,19 +1,6 @@
 # 🌍 GeoCoordination Library – Google Route Generator  
 
 
-
-
-
-
-
-
-
-   ____                 ____                  _       _             
-  / ___| ___  ___ ___  / ___|___  _   _ _ __ | |_ ___| |__   ___ _ __ 
- | |  _ / _ \/ __/ __| | |   / _ \| | | | '_ \| __/ __| '_ \ / _ \ '__|
- | |_| |  __/\__ \__ \ | |__| (_) | |_| | | | | |_\__ \ | | |  __/ |   
-  \____|\___||___/___/  \____\___/ \__,_|_| |_|\__|___/_| |_|\___|_|   
-                                                                      
 🚀 Google Route Generator – GeoCoordination Library
 
 Generate real-world geocoordinates between any two locations using Google Maps Directions API.
