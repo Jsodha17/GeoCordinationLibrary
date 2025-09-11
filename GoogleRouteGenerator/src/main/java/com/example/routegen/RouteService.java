@@ -16,49 +16,72 @@ import java.util.stream.Collectors;
 /**
  * RouteService - single-file library + CLI wrapper
  *
- * Public API (library use):
- *   List<RouteService.RoutePoint> pts = RouteService.generateRoute(startLat, startLon, endLat, endLon, intervalMeters, apiKey);
- *   String json = RouteService.generateRouteJson(...);
+ * New public API:
+ *  - RouteComparisonResult getAllRouteMetrics(startLat, startLon, endLat, endLon, apiKey)
+ *      -> info about every returned route, chosen shortest route index, and counts.
  *
- * CLI usage (executable jar):
- *   java -jar route-service.jar <startLat> <startLon> <endLat> <endLon> <intervalMeters> <API_KEY>
- *   -> prints JSON array to stdout: [{"lat":..., "lon":...}, ...]
+ * Keep existing APIs:
+ *  - generateRoute(...) and generateRouteJson(...)
+ *  - getShortestRouteMetrics(...) (returns RouteMetrics for chosen route)
  */
 public class RouteService {
     private static final Gson gson = new GsonBuilder().setPrettyPrinting().create();
 
-    /**
-     * DTO returned to callers.
-     */
+    // ---------- Public DTOs ----------
     public static class RoutePoint {
         public final double lat;
         public final double lon;
         public RoutePoint(double lat, double lon) { this.lat = lat; this.lon = lon; }
     }
 
+    public static class RouteMetrics {
+        public final double distanceMeters;
+        public final double durationSeconds;
+        public final int routeIndex; // 0-based index among returned alternatives
+
+        public RouteMetrics(double distanceMeters, double durationSeconds, int routeIndex) {
+            this.distanceMeters = distanceMeters;
+            this.durationSeconds = durationSeconds;
+            this.routeIndex = routeIndex;
+        }
+
+        @Override
+        public String toString() {
+            return "RouteMetrics{index=" + routeIndex + ", distanceMeters=" + distanceMeters + ", durationSeconds=" + durationSeconds + '}';
+        }
+    }
+
     /**
-     * Public library method - synchronous.
-     *
-     * @param startLat start latitude
-     * @param startLon start longitude
-     * @param endLat end latitude
-     * @param endLon end longitude
-     * @param intervalMeters densification interval in meters (e.g., 10)
-     * @param apiKey Google Directions API key (required)
-     * @return list of RoutePoint (lat/lon) along the chosen route (shortest by distance)
-     * @throws IOException on networking/parsing errors
+     * Comparison result: metrics for all returned routes and chosen index (shortest by distance).
      */
+    public static class RouteComparisonResult {
+        public final List<RouteMetrics> routes;
+        public final int chosenIndex;
+        public final int totalRoutes;
+
+        public RouteComparisonResult(List<RouteMetrics> routes, int chosenIndex) {
+            this.routes = Collections.unmodifiableList(new ArrayList<>(routes));
+            this.chosenIndex = chosenIndex;
+            this.totalRoutes = routes == null ? 0 : routes.size();
+        }
+
+        @Override
+        public String toString() {
+            return "RouteComparisonResult{totalRoutes=" + totalRoutes + ", chosenIndex=" + chosenIndex + ", routes=" + routes + '}';
+        }
+    }
+
+    // ---------- Public library methods ----------
+
     public static List<RoutePoint> generateRoute(double startLat, double startLon,
                                                  double endLat, double endLon,
                                                  double intervalMeters,
                                                  String apiKey) throws IOException {
+        requireApiKey(apiKey);
         List<LatLng> pts = RouteGeneratorCore.generatePointsFromDirections(startLat, startLon, endLat, endLon, intervalMeters, apiKey);
         return pts.stream().map(p -> new RoutePoint(p.lat, p.lon)).collect(Collectors.toList());
     }
 
-    /**
-     * Convenience: JSON string of the list (pretty-printed).
-     */
     public static String generateRouteJson(double startLat, double startLon,
                                            double endLat, double endLon,
                                            double intervalMeters,
@@ -67,8 +90,30 @@ public class RouteService {
         return gson.toJson(pts);
     }
 
-    // ----------------- CLI entrypoint -----------------
+    /**
+     * Returns metrics (distance, duration and routeIndex) for the shortest route among alternatives.
+     */
+    public static RouteMetrics getShortestRouteMetrics(double startLat, double startLon,
+                                                       double endLat, double endLon,
+                                                       String apiKey) throws IOException {
+        requireApiKey(apiKey);
+        return RouteGeneratorCore.getShortestRouteMetrics(startLat, startLon, endLat, endLon, apiKey);
+    }
+
+    /**
+     * NEW: Return metrics for all routes returned by Google and indicate which was chosen (shortest).
+     * The returned object's routes list preserves the same order as Google returns them (index 0..n-1).
+     */
+    public static RouteComparisonResult getAllRouteMetrics(double startLat, double startLon,
+                                                           double endLat, double endLon,
+                                                           String apiKey) throws IOException {
+        requireApiKey(apiKey);
+        return RouteGeneratorCore.getAllRouteMetrics(startLat, startLon, endLat, endLon, apiKey);
+    }
+
+    // ---------- CLI (unchanged) ----------
     public static void main(String[] args) {
+        // Keep CLI same as before: prints geometry JSON.
         if (args.length != 6) {
             System.err.println("Usage: java -jar route-service.jar <startLat> <startLon> <endLat> <endLon> <intervalMeters> <API_KEY>");
             System.exit(2);
@@ -80,7 +125,6 @@ public class RouteService {
             double eLon = Double.parseDouble(args[3]);
             double interval = Double.parseDouble(args[4]);
             String apiKey = args[5];
-
             String json = generateRouteJson(sLat, sLon, eLat, eLon, interval, apiKey);
             System.out.println(json);
         } catch (Exception ex) {
@@ -89,8 +133,15 @@ public class RouteService {
         }
     }
 
-    // ----------------- Internal core implementation -----------------
-    // All internal code left package-private / private to avoid polluting public API.
+    // ---------- Helpers ----------
+    private static void requireApiKey(String apiKey) {
+        if (apiKey == null || apiKey.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Google API key missing. Provide via env GOOGLE_API_KEY or pass as argument.");
+        }
+    }
+
+    // ---------- Internal core implementation ----------
     static class LatLng {
         final double lat;
         final double lon;
@@ -101,48 +152,113 @@ public class RouteService {
         private static final OkHttpClient client = new OkHttpClient();
         private static final double EARTH_R = 6_371_000.0;
 
-        /**
-         * Call Google Directions (alternatives=true), pick the shortest route by distance,
-         * extract step-level polylines, densify to intervalMeters, and return list of LatLng.
-         */
+        // Public internal entry used by library methods:
         static List<LatLng> generatePointsFromDirections(double startLat, double startLon,
                                                          double endLat, double endLon,
                                                          double intervalMeters,
                                                          String apiKey) throws IOException {
             String directionsJson = fetchDirections(startLat, startLon, endLat, endLon, apiKey);
-            if (directionsJson == null) throw new IOException("No response from Directions API");
-
             JsonObject root = JsonParser.parseString(directionsJson).getAsJsonObject();
             JsonArray routes = root.has("routes") ? root.getAsJsonArray("routes") : null;
             if (routes == null || routes.size() == 0) throw new IOException("Directions API returned no routes");
 
-            int bestIndex = -1;
-            double bestDistance = Double.POSITIVE_INFINITY;
+            // choose shortest route by distance
+            int bestIndex = pickShortestRouteIndex(routes);
+            JsonObject bestRoute = routes.get(bestIndex).getAsJsonObject();
+            List<LatLng> stepPts = extractPointsFromRoute(bestRoute);
+            if (stepPts.size() < 2) throw new IOException("Best route geometry too short");
+            return densifyRoute(stepPts, intervalMeters);
+        }
 
+        // NEW: returns metrics for all routes and chosen shortest index
+        static RouteComparisonResult getAllRouteMetrics(double startLat, double startLon,
+                                                        double endLat, double endLon,
+                                                        String apiKey) throws IOException {
+            String directionsJson = fetchDirections(startLat, startLon, endLat, endLon, apiKey);
+            JsonObject root = JsonParser.parseString(directionsJson).getAsJsonObject();
+            JsonArray routes = root.has("routes") ? root.getAsJsonArray("routes") : null;
+            if (routes == null || routes.size() == 0) throw new IOException("Directions API returned no routes");
+
+            List<RouteMetrics> metricsList = new ArrayList<>();
             for (int i = 0; i < routes.size(); i++) {
                 JsonObject route = routes.get(i).getAsJsonObject();
-                JsonArray legs = route.has("legs") ? route.getAsJsonArray("legs") : null;
                 double totalDist = 0.0;
-                boolean hasDistance = true;
+                double totalDur = 0.0;
+                boolean hasDist = true;
+                boolean hasDur = true;
+
+                JsonArray legs = route.has("legs") ? route.getAsJsonArray("legs") : null;
                 if (legs != null) {
                     for (int li = 0; li < legs.size(); li++) {
                         JsonObject leg = legs.get(li).getAsJsonObject();
                         if (leg.has("distance") && leg.getAsJsonObject("distance").has("value")) {
                             totalDist += leg.getAsJsonObject("distance").get("value").getAsDouble();
                         } else {
-                            hasDistance = false;
+                            hasDist = false;
+                        }
+                        if (leg.has("duration") && leg.getAsJsonObject("duration").has("value")) {
+                            totalDur += leg.getAsJsonObject("duration").get("value").getAsDouble();
+                        } else {
+                            hasDur = false;
                         }
                     }
-                } else hasDistance = false;
+                } else {
+                    hasDist = false; hasDur = false;
+                }
 
-                if (!hasDistance) {
+                if (!hasDist) {
                     if (route.has("overview_polyline") && route.getAsJsonObject("overview_polyline").has("points")) {
-                        String overviewEnc = route.getAsJsonObject("overview_polyline").get("points").getAsString();
-                        List<LatLng> pts = decodePolyline(overviewEnc);
+                        String enc = route.getAsJsonObject("overview_polyline").get("points").getAsString();
+                        List<LatLng> pts = decodePolyline(enc);
                         totalDist = computePolylineLengthMeters(pts);
                     } else {
                         totalDist = Double.POSITIVE_INFINITY;
                     }
+                }
+                if (!hasDur) totalDur = -1;
+
+                metricsList.add(new RouteMetrics(totalDist, totalDur, i));
+            }
+
+            // pick shortest by distance (ties -> first)
+            int chosen = 0;
+            double minDist = Double.POSITIVE_INFINITY;
+            for (RouteMetrics rm : metricsList) {
+                if (rm.distanceMeters < minDist) {
+                    minDist = rm.distanceMeters;
+                    chosen = rm.routeIndex;
+                }
+            }
+
+            return new RouteComparisonResult(metricsList, chosen);
+        }
+
+        // Helper used above to pick shortest index quickly
+        private static int pickShortestRouteIndex(JsonArray routes) {
+            int bestIndex = 0;
+            double bestDistance = Double.POSITIVE_INFINITY;
+            for (int i = 0; i < routes.size(); i++) {
+                JsonObject route = routes.get(i).getAsJsonObject();
+                double totalDist = 0.0;
+                boolean hasDist = true;
+                JsonArray legs = route.has("legs") ? route.getAsJsonArray("legs") : null;
+                if (legs != null) {
+                    for (int li = 0; li < legs.size(); li++) {
+                        JsonObject leg = legs.get(li).getAsJsonObject();
+                        if (leg.has("distance") && leg.getAsJsonObject("distance").has("value")) {
+                            totalDist += leg.getAsJsonObject("distance").get("value").getAsDouble();
+                        } else {
+                            hasDist = false;
+                        }
+                    }
+                } else hasDist = false;
+
+                if (!hasDist) {
+                    if (route.has("overview_polyline") && route.getAsJsonObject("overview_polyline").has("points")) {
+                        String enc = route.getAsJsonObject("overview_polyline").get("points").getAsString();
+                        List<LatLng> pts = decodePolyline(enc);
+                        totalDist = computePolylineLengthMeters(pts);
+                    } else totalDist = Double.POSITIVE_INFINITY;
                 }
 
                 if (totalDist < bestDistance) {
@@ -150,18 +266,21 @@ public class RouteService {
                     bestIndex = i;
                 }
             }
-
-            if (bestIndex < 0) throw new IOException("Could not choose best route");
-
-            JsonObject bestRoute = routes.get(bestIndex).getAsJsonObject();
-            List<LatLng> stepPts = extractPointsFromRoute(bestRoute);
-            if (stepPts.size() < 2) throw new IOException("Best route geometry too short");
-
-            return densifyRoute(stepPts, intervalMeters);
+            return bestIndex;
         }
 
-        // HTTP call
+        // existing helper: returns RouteMetrics for the chosen route (shortest)
+        static RouteService.RouteMetrics getShortestRouteMetrics(double startLat, double startLon,
+                                                                 double endLat, double endLon,
+                                                                 String apiKey) throws IOException {
+            RouteComparisonResult res = getAllRouteMetrics(startLat, startLon, endLat, endLon, apiKey);
+            RouteMetrics chosen = res.routes.get(res.chosenIndex);
+            return chosen;
+        }
+
+        // HTTP call to Google Directions
         private static String fetchDirections(double sLat, double sLon, double eLat, double eLon, String apiKey) throws IOException {
+            if (apiKey == null) throw new IllegalArgumentException("API key null");
             String url = buildDirectionsUrl(sLat, sLon, eLat, eLon, apiKey);
             Request req = new Request.Builder().url(url).get().build();
             try (Response resp = client.newCall(req).execute()) {
@@ -182,11 +301,13 @@ public class RouteService {
                     base, urlEncode(origin), urlEncode(dest), keyParam);
         }
 
+        // defensive urlEncode
         private static String urlEncode(String s) {
+            if (s == null) throw new IllegalArgumentException("urlEncode received null — missing required parameter (likely API key).");
             return URLEncoder.encode(s, StandardCharsets.UTF_8);
         }
 
-        // Extract step-level polylines -> ordered LatLng list
+        // ---------- existing route geometry helpers ----------
         private static List<LatLng> extractPointsFromRoute(JsonObject route) {
             List<LatLng> all = new ArrayList<>();
             JsonArray legs = route.has("legs") ? route.getAsJsonArray("legs") : null;
@@ -215,7 +336,7 @@ public class RouteService {
                     }
                 }
             }
-            // final dedupe adjacent
+            // dedupe adjacents
             List<LatLng> dedup = new ArrayList<>();
             LatLng prev = null;
             for (LatLng p : all) {
@@ -227,7 +348,6 @@ public class RouteService {
             return dedup;
         }
 
-        // decode Google polyline
         private static List<LatLng> decodePolyline(String encoded) {
             List<LatLng> poly = new ArrayList<>();
             int index = 0, len = encoded.length();
@@ -259,7 +379,6 @@ public class RouteService {
             return poly;
         }
 
-        // densify each segment with points every intervalMeters
         private static List<LatLng> densifyRoute(List<LatLng> poly, double intervalMeters) {
             List<LatLng> out = new ArrayList<>();
             if (poly.isEmpty()) return out;
@@ -282,7 +401,7 @@ public class RouteService {
                 }
                 out.add(b);
             }
-            // dedupe adjacent near-equal
+            // dedupe
             List<LatLng> dedup = new ArrayList<>();
             LatLng prev = null;
             for (LatLng p : out) {
@@ -302,7 +421,7 @@ public class RouteService {
             return total;
         }
 
-        // geodesy helpers (spherical approx)
+        // geodesy helpers
         private static double haversine(double lat1, double lon1, double lat2, double lon2) {
             double φ1 = Math.toRadians(lat1);
             double φ2 = Math.toRadians(lat2);
