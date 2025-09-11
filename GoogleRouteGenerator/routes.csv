@@ -1,0 +1,2 @@
+# startLat,startLon,endLat,endLon,intervalMeters,outJson,outJs
+23.038765,72.610756,23.07,72.62,10,route1.json,route1.js
