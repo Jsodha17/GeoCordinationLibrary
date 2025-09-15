@@ -78,6 +78,9 @@ public class RouteService {
                                                  double intervalMeters,
                                                  String apiKey) throws IOException {
         requireApiKey(apiKey);
+        if (intervalMeters <= 0) {
+            throw new IllegalArgumentException("intervalMeters must be > 0");
+        }
         List<LatLng> pts = RouteGeneratorCore.generatePointsFromDirections(startLat, startLon, endLat, endLon, intervalMeters, apiKey);
         return pts.stream().map(p -> new RoutePoint(p.lat, p.lon)).collect(Collectors.toList());
     }
@@ -157,6 +160,9 @@ public class RouteService {
                                                          double endLat, double endLon,
                                                          double intervalMeters,
                                                          String apiKey) throws IOException {
+            if (intervalMeters <= 0) {
+                throw new IllegalArgumentException("intervalMeters must be > 0");
+            }
             String directionsJson = fetchDirections(startLat, startLon, endLat, endLon, apiKey);
             JsonObject root = JsonParser.parseString(directionsJson).getAsJsonObject();
             JsonArray routes = root.has("routes") ? root.getAsJsonArray("routes") : null;
@@ -379,29 +385,83 @@ public class RouteService {
             return poly;
         }
 
+        /**
+         * Densify the entire polyline so generated points are spaced evenly along the whole route.
+         * This implementation keeps a running remainder (distanceSinceLastPoint) so spacing continues
+         * across segment boundaries (instead of restarting per segment).
+         */
         private static List<LatLng> densifyRoute(List<LatLng> poly, double intervalMeters) {
             List<LatLng> out = new ArrayList<>();
             if (poly.isEmpty()) return out;
+            if (intervalMeters <= 0) {
+                out.addAll(poly);
+                return out;
+            }
+
+            // Add very first point
             out.add(poly.get(0));
+
+            // distance from the last emitted point to where we currently are along the route
+            double distanceSinceLastPoint = 0.0;
+
+            // cursor start location (we'll advance this as we place points)
+            LatLng cursor = poly.get(0);
+
             for (int i = 0; i < poly.size() - 1; i++) {
-                LatLng a = poly.get(i);
-                LatLng b = poly.get(i + 1);
-                double segDist = haversine(a.lat, a.lon, b.lat, b.lon);
-                if (segDist <= 0) {
-                    out.add(b);
+                // Note: 'cursor' is the start of the remaining piece of the segment.
+                LatLng segmentStart = cursor;
+                LatLng segmentEnd = poly.get(i + 1);
+
+                double segDist = haversine(segmentStart.lat, segmentStart.lon, segmentEnd.lat, segmentEnd.lon);
+                if (segDist <= 1e-9) {
+                    // zero-length segment -> advance cursor and continue
+                    cursor = segmentEnd;
                     continue;
                 }
-                double bearing = initialBearing(a.lat, a.lon, b.lat, b.lon);
-                int steps = (int) Math.floor(segDist / intervalMeters);
-                for (int s = 1; s <= steps; s++) {
-                    double d = s * intervalMeters;
-                    if (d >= segDist) break;
-                    LatLng p = destinationPoint(a.lat, a.lon, bearing, d);
-                    out.add(p);
+
+                double remainingSegDist = segDist;
+                double startLat = segmentStart.lat;
+                double startLon = segmentStart.lon;
+                double bearingToEnd = initialBearing(startLat, startLon, segmentEnd.lat, segmentEnd.lon);
+
+                // While we can place at least one more point from this segment
+                while (distanceSinceLastPoint + remainingSegDist >= intervalMeters - 1e-6) {
+                    double distanceNeeded = intervalMeters - distanceSinceLastPoint; // how far along remaining segment to place next point
+                    LatLng nextPt = destinationPoint(startLat, startLon, bearingToEnd, distanceNeeded);
+
+                    // avoid duplicates
+                    LatLng lastOut = out.get(out.size() - 1);
+                    if (Math.abs(lastOut.lat - nextPt.lat) > 1e-9 || Math.abs(lastOut.lon - nextPt.lon) > 1e-9) {
+                        out.add(nextPt);
+                    }
+
+                    // move the start forward to the newly-added point and update remaining distance
+                    remainingSegDist -= distanceNeeded;
+                    startLat = nextPt.lat;
+                    startLon = nextPt.lon;
+                    distanceSinceLastPoint = 0.0;
+
+                    // recompute bearing from this new cursor position to original segment end
+                    bearingToEnd = initialBearing(startLat, startLon, segmentEnd.lat, segmentEnd.lon);
+
+                    if (remainingSegDist <= 1e-6) break; // nothing left on segment
                 }
-                out.add(b);
+
+                // whatever remains of this segment contributes to the running distanceSinceLastPoint
+                distanceSinceLastPoint += remainingSegDist;
+
+                // advance cursor to the original vertex (segmentEnd) for next iteration
+                cursor = segmentEnd;
             }
-            // dedupe
+
+            // ensure final endpoint present
+            LatLng last = poly.get(poly.size() - 1);
+            LatLng lastOut = out.get(out.size() - 1);
+            if (Math.abs(last.lat - lastOut.lat) > 1e-9 || Math.abs(last.lon - lastOut.lon) > 1e-9) {
+                out.add(last);
+            }
+
+            // final dedupe (defensive)
             List<LatLng> dedup = new ArrayList<>();
             LatLng prev = null;
             for (LatLng p : out) {
