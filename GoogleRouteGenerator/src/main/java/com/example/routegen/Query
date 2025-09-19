@@ -1,22 +1,38 @@
--- :mother_name parameter
-SELECT f.id AS fleet_id,
-       f.`name` AS fleet_name,
-       ST_Distance_Sphere(l.geometry, m.mother_point) AS distance_meters
-FROM (
-  SELECT a.id, l.geometry AS mother_point
+-- :mother_name is bind param
+WITH mother AS (
+  SELECT a.id AS mother_id, a."name", l.latitude AS mother_lat, l.longitude AS mother_lon
   FROM asset a
   JOIN asset_model am2 ON am2.id = a.model_id
   JOIN asset_attribute aa ON aa.asset_id = a.id
   JOIN attribute_model am ON am.id = aa.attribute_model_id
-  JOIN `location` l ON l.id = a.location_id
+  JOIN "location" l ON l.id = a.location_id
   WHERE am2.category = 'CNG_STATION'
-    AND a.`name` = :mother_name
-    AND am.`name` = 'D_Station_Type'
+    AND a."name" = :mother_name
+    AND am."name" = 'D_Station_Type'
     AND aa.value = 'Mother Station'
   LIMIT 1
-) m
-JOIN asset f ON 1=1
-JOIN `location` l ON l.id = f.location_id
-WHERE f.`name` LIKE 'FlEET_%'
-  AND ST_Distance_Sphere(l.geometry, m.mother_point) <= 30
-ORDER BY ST_Distance_Sphere(l.geometry, m.mother_point);
+)
+SELECT f.id AS fleet_id,
+       f."name" AS fleet_name,
+       l.latitude,
+       l.longitude,
+       -- Haversine distance in meters
+       ( 6371000 * 2 * 
+         ASIN( SQRT(
+           POWER( SIN( RADIANS(l.latitude - m.mother_lat) / 2 ), 2 )
+           + COS( RADIANS(m.mother_lat) ) * COS( RADIANS(l.latitude) )
+             * POWER( SIN( RADIANS(l.longitude - m.mother_lon) / 2 ), 2 )
+         ))
+       ) AS distance_meters
+FROM asset f
+JOIN "location" l ON l.id = f.location_id
+CROSS JOIN mother m
+WHERE f."name" LIKE 'FlEET_%'
+  -- compute Haversine and filter <= 30m
+  AND ( 6371000 * 2 * ASIN( SQRT(
+           POWER( SIN( RADIANS(l.latitude - m.mother_lat) / 2 ), 2 )
+           + COS( RADIANS(m.mother_lat) ) * COS( RADIANS(l.latitude) )
+             * POWER( SIN( RADIANS(l.longitude - m.mother_lon) / 2 ), 2 )
+         ))
+      ) <= 30
+ORDER BY distance_meters;
