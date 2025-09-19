@@ -1,33 +1,24 @@
--- :mother_name is the bind parameter for the mother station name
--- This finds the mother station first, then finds fleets within 30 meters.
-
--- 1) get mother station coordinates
-SELECT @m_lon := ST_X(l.geometry), @m_lat := ST_Y(l.geometry)
-FROM asset a
-JOIN asset_model am2 ON am2.id = a.model_id
-JOIN asset_attribute aa ON aa.asset_id = a.id
-JOIN attribute_model am ON am.id = aa.attribute_model_id
-JOIN `location` l ON l.id = a.location_id
-WHERE am2.category = 'CNG_STATION'
-  AND a.`name` = :mother_name
-  AND am.`name` = 'D_Station_Type'
-  AND aa.value = 'Mother Station'
-LIMIT 1;
-
--- 2) quick guard: if mother not found, return nothing
--- (optional) you can check @m_lat IS NOT NULL
-
--- 3) main query: bounding-box prefilter + precise ST_Distance_Sphere check
 SELECT f.id AS fleet_id,
        f.`name` AS fleet_name,
        l.geometry AS fleet_geom,
-       ST_Distance_Sphere(l.geometry, POINT(@m_lon, @m_lat)) AS distance_meters
+       ST_Distance_Sphere(l.geometry, POINT(m.m_lon, m.m_lat)) AS distance_meters
 FROM asset f
 JOIN `location` l ON l.id = f.location_id
+CROSS JOIN (
+  SELECT ST_X(l.geometry) AS m_lon, ST_Y(l.geometry) AS m_lat
+  FROM asset a
+  JOIN asset_model am2 ON am2.id = a.model_id
+  JOIN asset_attribute aa ON aa.asset_id = a.id
+  JOIN attribute_model am ON am.id = aa.attribute_model_id
+  JOIN `location` l ON l.id = a.location_id
+  WHERE am2.category = 'CNG_STATION'
+    AND a.`name` = :mother_name
+    AND am.`name` = 'D_Station_Type'
+    AND aa.value = 'Mother Station'
+  LIMIT 1
+) AS m
 WHERE f.`name` LIKE 'FlEET_%'
-  -- bounding box to reduce scanned rows (approx 30m -> ~0.0003 degrees; using a safer margin)
-  AND ST_X(l.geometry) BETWEEN (@m_lon - 0.001) AND (@m_lon + 0.001)
-  AND ST_Y(l.geometry) BETWEEN (@m_lat - 0.001) AND (@m_lat + 0.001)
-  -- exact distance check (meters)
-  AND ST_Distance_Sphere(l.geometry, POINT(@m_lon, @m_lat)) <= 30
-ORDER BY distance_meters ASC;
+  AND ST_X(l.geometry) BETWEEN (m.m_lon - 0.001) AND (m.m_lon + 0.001)
+  AND ST_Y(l.geometry) BETWEEN (m.m_lat - 0.001) AND (m.m_lat + 0.001)
+  AND ST_Distance_Sphere(l.geometry, POINT(m.m_lon, m.m_lat)) <= 30
+ORDER BY distance_meters;
