@@ -1,0 +1,22 @@
+-- :mother_name parameter
+SELECT f.id AS fleet_id,
+       f.`name` AS fleet_name,
+       ST_Distance_Sphere(l.geometry, m.mother_point) AS distance_meters
+FROM (
+  SELECT a.id, l.geometry AS mother_point
+  FROM asset a
+  JOIN asset_model am2 ON am2.id = a.model_id
+  JOIN asset_attribute aa ON aa.asset_id = a.id
+  JOIN attribute_model am ON am.id = aa.attribute_model_id
+  JOIN `location` l ON l.id = a.location_id
+  WHERE am2.category = 'CNG_STATION'
+    AND a.`name` = :mother_name
+    AND am.`name` = 'D_Station_Type'
+    AND aa.value = 'Mother Station'
+  LIMIT 1
+) m
+JOIN asset f ON 1=1
+JOIN `location` l ON l.id = f.location_id
+WHERE f.`name` LIKE 'FlEET_%'
+  AND ST_Distance_Sphere(l.geometry, m.mother_point) <= 30
+ORDER BY ST_Distance_Sphere(l.geometry, m.mother_point);
